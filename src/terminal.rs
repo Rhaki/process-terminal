@@ -2,7 +2,7 @@ use {
     crate::{
         MessageSettings, ProcessSettings, ScrollSettings, let_clone, shared::Shared, spawn_thread,
     },
-    anyhow::Result,
+    anyhow::{Result, anyhow},
     crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers},
     ratatui::{
         Frame,
@@ -63,7 +63,11 @@ impl Terminal {
                     .take()
                     .ok_or_else(|| anyhow::anyhow!("Failed to get stdout on process: {name}"))?;
 
-                spawn_thread!(thread_output(stdout, process.out_messages));
+                spawn_thread!(thread_output(
+                    stdout,
+                    process.out_messages,
+                    process.search_message
+                ));
             }
             MessageSettings::Error => {
                 let stderr = child
@@ -93,7 +97,11 @@ impl Terminal {
 
                 let main_messages = self.main_messages.clone();
 
-                spawn_thread!(thread_output(stdout, process.out_messages));
+                spawn_thread!(thread_output(
+                    stdout,
+                    process.out_messages,
+                    process.search_message
+                ));
                 spawn_thread!(thread_error(
                     child,
                     stderr,
@@ -124,6 +132,42 @@ impl Terminal {
             messages.push(message.to_string());
         });
     }
+
+    pub fn block_search_message<S, P>(&self, process: P, submsg: S) -> Result<String>
+    where
+        S: ToString,
+        P: ToString,
+    {
+        let process = process.to_string();
+
+        let process = self
+            .processes
+            .read_access()
+            .clone()
+            .into_iter()
+            .find(|p| p.name == process)
+            .ok_or(anyhow!("Process not found."))?;
+
+        process.search_message.write_with(|mut process| {
+            *process = Some(SearchMessage::new(submsg.to_string()));
+        });
+
+        loop {
+            let message = process.search_message.write_with(|mut search_message| {
+                let message = search_message.as_ref().unwrap().message.clone();
+                if message.is_some() {
+                    *search_message = None;
+                }
+                message
+            });
+
+            if let Some(message) = message {
+                return Ok(message);
+            }
+
+            thread_sleep();
+        }
+    }
 }
 
 impl Drop for Terminal {
@@ -132,14 +176,26 @@ impl Drop for Terminal {
     }
 }
 
-fn thread_output(stdout: ChildStdout, messages: SharedMessages) {
+fn thread_output(
+    stdout: ChildStdout,
+    messages: SharedMessages,
+    search_message: Shared<Option<SearchMessage>>,
+) {
     let regex = Regex::new();
 
     for line in BufReader::new(stdout).lines() {
         let line = regex.clear(line.expect("Failed to read line from stdout."));
 
         messages.write_with(|mut messages| {
-            messages.push(line);
+            messages.push(line.clone());
+        });
+
+        search_message.write_with(|mut maybe_search_message| {
+            if let Some(search_message) = maybe_search_message.as_mut() {
+                if line.contains(&search_message.submsg) {
+                    search_message.message = Some(line);
+                }
+            }
         });
     }
 }
@@ -330,6 +386,10 @@ fn thread_scroll(scroll: Shared<ScrollStatus>, up_right: KeyCode, down_left: Key
                 scroll.write_with(|mut scroll| {
                     scroll.x = scroll.x.map(|x| x.saturating_sub(1)).or(Some(0));
                 });
+            } else if event == KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()) {
+                // kill process
+                ratatui::restore();
+                std::process::exit(0);
             }
         }
     }
@@ -346,6 +406,7 @@ struct Process<O = SharedMessages, E = SharedMessages, S = Shared<ScrollStatus>>
     pub err_messages: E,
     pub settings: ProcessSettings,
     pub scroll_status: S,
+    pub search_message: Shared<Option<SearchMessage>>,
 }
 
 impl Process {
@@ -356,6 +417,7 @@ impl Process {
             out_messages: Default::default(),
             err_messages: Default::default(),
             scroll_status: Default::default(),
+            search_message: Default::default(),
         }
     }
 
@@ -366,6 +428,7 @@ impl Process {
             out_messages: self.out_messages.read_access().clone(),
             err_messages: self.err_messages.read_access().clone(),
             scroll_status: self.scroll_status.read_access().clone(),
+            search_message: self.search_message.clone(),
         }
     }
 }
@@ -385,6 +448,20 @@ impl Regex {
 
     pub fn clear(&self, line: String) -> String {
         self.0.replace_all(&line, "").to_string()
+    }
+}
+
+struct SearchMessage {
+    pub submsg: String,
+    pub message: Option<String>,
+}
+
+impl SearchMessage {
+    pub fn new(submsg: String) -> Self {
+        Self {
+            submsg,
+            message: None,
+        }
     }
 }
 
@@ -462,8 +539,14 @@ mod tests {
             .unwrap();
 
         sleep(Duration::from_secs(2));
+        terminal.add_message("searching_message");
+        let msg = terminal.block_search_message("test-2", "llo").unwrap();
+        terminal.add_message(msg);
 
-        terminal.add_message("main");
+        sleep(Duration::from_secs(2));
+        terminal.add_message("searching_message");
+        let msg = terminal.block_search_message("test-2", "ar").unwrap();
+        terminal.add_message(msg);
 
         sleep(Duration::from_secs(50));
     }
