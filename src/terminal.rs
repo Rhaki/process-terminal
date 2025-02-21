@@ -1,5 +1,7 @@
 use {
-    crate::{MessageSettings, ProcessSettings, let_clone, shared::Shared, spawn_thread},
+    crate::{
+        MessageSettings, ProcessSettings, ScrollSettings, let_clone, shared::Shared, spawn_thread,
+    },
     anyhow::Result,
     crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers},
     ratatui::{
@@ -101,6 +103,16 @@ impl Terminal {
             }
         };
 
+        if let ScrollSettings::Enable {
+            up_right,
+            down_left,
+        } = process.settings.scroll
+        {
+            let scroll = process.scroll_status.clone();
+
+            spawn_thread!(thread_scroll(scroll, up_right, down_left));
+        }
+
         Ok(())
     }
 
@@ -186,7 +198,14 @@ fn thread_draw(
                     .constraints([Constraint::Percentage(30), Constraint::Percentage(70)])
                     .split(frame.area());
 
-                render_frame(frame, main_chunks[0], "Main", main_messages, &main_scroll);
+                render_frame(
+                    frame,
+                    main_chunks[0],
+                    "Main",
+                    None,
+                    main_messages,
+                    &main_scroll,
+                );
 
                 let processes_chunks = Layout::default()
                     .direction(Direction::Horizontal)
@@ -203,6 +222,7 @@ fn thread_draw(
                                 frame,
                                 processes_chunks[index],
                                 process.name,
+                                Some("out"),
                                 process.out_messages,
                                 &process.scroll_status,
                             );
@@ -212,6 +232,7 @@ fn thread_draw(
                                 frame,
                                 processes_chunks[index],
                                 process.name,
+                                Some("err"),
                                 process.err_messages,
                                 &process.scroll_status,
                             );
@@ -229,6 +250,7 @@ fn thread_draw(
                                 frame,
                                 process_chunks[0],
                                 &process.name,
+                                Some("out"),
                                 process.out_messages,
                                 &process.scroll_status,
                             );
@@ -236,6 +258,7 @@ fn thread_draw(
                                 frame,
                                 process_chunks[1],
                                 process.name,
+                                Some("err"),
                                 process.err_messages,
                                 &process.scroll_status,
                             );
@@ -253,6 +276,7 @@ fn render_frame<N>(
     frame: &mut Frame,
     chunk: Rect,
     name: N,
+    ty: Option<&str>,
     messages: Vec<String>,
     scroll: &ScrollStatus,
 ) where
@@ -266,15 +290,17 @@ fn render_frame<N>(
 
     let mut state = ListState::default().with_selected(select_message);
 
-    if let Some(x) = scroll.x {
-        state.scroll_up_by(x);
+    if let Some(y) = scroll.y {
+        state.scroll_up_by(y);
     }
 
-    let list = List::new(messages).block(
-        Block::default()
-            .title(name.to_string())
-            .borders(Borders::ALL),
-    );
+    let name = if let Some(ty) = ty {
+        format!("{}-{ty}", name.to_string())
+    } else {
+        name.to_string()
+    };
+
+    let list = List::new(messages).block(Block::default().title(name).borders(Borders::ALL));
 
     frame.render_stateful_widget(list, chunk, &mut state);
 }
@@ -306,8 +332,6 @@ fn thread_scroll(scroll: Shared<ScrollStatus>, up_right: KeyCode, down_left: Key
                 });
             }
         }
-
-        thread_sleep();
     }
 }
 
@@ -368,7 +392,8 @@ impl Regex {
 mod tests {
     use {
         super::Terminal,
-        crate::ProcessSettings,
+        crate::{ProcessSettings, ScrollSettings},
+        crossterm::event::KeyCode,
         std::{
             process::{Child, Command, Stdio},
             thread::sleep,
@@ -376,13 +401,10 @@ mod tests {
         },
     };
 
-    fn create_process<'a, const N: usize>(messages: [&str; N], repeat: u64, sleep: f64) -> Child
-where
-        // M: IntoIterator<Item = &'a str>,
-    {
+    fn create_process<'a, const N: usize>(messages: [&str; N], sleep: f64, last: u64) -> Child {
         let mut args = format!("sleep {sleep}");
 
-        for _ in 0..repeat {
+        for _ in 0..(last as f64 / sleep / messages.len() as f64) as usize {
             for message in messages {
                 args.push_str(&format!(" && echo {message} && sleep {sleep}"));
             }
@@ -414,19 +436,22 @@ where
     fn process() {
         let terminal = Terminal::new();
 
-        let process1 = create_process(["hello", "world", "foo", "bar"], 10, 0.5);
+        let process1 = create_process(["hello", "world", "foo", "bar"], 1.0, 30);
 
         terminal
             .add_process(
                 "test-1",
                 process1,
-                ProcessSettings::new(crate::MessageSettings::All),
+                ProcessSettings::new_with_scroll(
+                    crate::MessageSettings::Output,
+                    ScrollSettings::enable(KeyCode::Left, KeyCode::Right),
+                ),
             )
             .unwrap();
 
         sleep(Duration::from_secs(2));
 
-        let process2 = create_process(["hello", "world", "foo", "bar"], 10, 0.5);
+        let process2 = create_process(["hello", "world >&2", "foo", "bar"], 0.1, 8);
 
         terminal
             .add_process(
@@ -440,6 +465,6 @@ where
 
         terminal.add_message("main");
 
-        sleep(Duration::from_secs(10));
+        sleep(Duration::from_secs(50));
     }
 }
