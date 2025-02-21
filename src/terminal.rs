@@ -386,7 +386,7 @@ fn thread_scroll(scroll: Shared<ScrollStatus>, up_right: KeyCode, down_left: Key
                 scroll.write_with(|mut scroll| {
                     scroll.x = scroll.x.map(|x| x.saturating_sub(1)).or(Some(0));
                 });
-            } else if event == KeyEvent::new(KeyCode::Enter, KeyModifiers::empty()) {
+            } else if event == KeyEvent::new(KeyCode::Esc, KeyModifiers::empty()) {
                 // kill process
                 ratatui::restore();
                 std::process::exit(0);
