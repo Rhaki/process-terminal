@@ -1,15 +1,25 @@
 use {
     crate::{
-        MessageSettings, ProcessSettings, ScrollSettings, let_clone, shared::Shared, spawn_thread,
+        MessageSettings, ProcessSettings, ScrollSettings,
+        keyboard_actions::{
+            Action, ActionType, BaseStatus, DetachBaseStatus, KeyBoardActions, KeyCodeExt,
+            ScrollStatus,
+        },
+        let_clone,
+        shared::Shared,
+        spawn_thread,
     },
     anyhow::{Result, anyhow},
-    crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers},
+    crossterm::event::{KeyCode, KeyModifiers},
     ratatui::{
         Frame,
         layout::{Constraint, Direction, Layout, Rect},
+        style::Stylize,
+        text::Line,
         widgets::{Block, Borders, List, ListState},
     },
     std::{
+        cmp::min,
         io::{BufRead, BufReader},
         process::{Child, ChildStderr, ChildStdout},
         thread::sleep,
@@ -23,6 +33,8 @@ type SharedProcesses = Shared<Vec<Process>>;
 pub struct Terminal {
     processes: SharedProcesses,
     main_messages: SharedMessages,
+    inputs: Shared<KeyBoardActions>,
+    focus: Shared<Option<usize>>,
 }
 
 impl Terminal {
@@ -30,17 +42,34 @@ impl Terminal {
         let_clone!(
             Default::default(),
             main_messages | _main_messages: SharedMessages,
-            processes     | _processes:     SharedProcesses,
-            _scroll_d     | _scroll_s:      Shared<ScrollStatus>
+            processes     | _processes:     SharedProcesses
         );
 
-        spawn_thread!(thread_draw(_main_messages, _scroll_d, _processes));
+        let (inputs, scroll_status) = KeyBoardActions::new();
 
-        spawn_thread!(thread_scroll(_scroll_s, KeyCode::Up, KeyCode::Down,));
+        let_clone!(
+            Shared::new(inputs),
+            inputs | _inputs: Shared<KeyBoardActions>
+        );
+
+        #[cfg(test)]
+        let not_in_test = false;
+        #[cfg(not(test))]
+        let not_in_test = true;
+
+        let focus = scroll_status.focus.clone();
+
+        if std::env::args().any(|arg| arg.starts_with("--exact")) || not_in_test {
+            spawn_thread!(thread_draw(_main_messages, scroll_status, _processes));
+        }
+
+        spawn_thread!(thread_input(_inputs));
 
         Terminal {
             processes,
             main_messages,
+            inputs,
+            focus,
         }
     }
 
@@ -52,74 +81,125 @@ impl Terminal {
     ) -> Result<()> {
         let process = Process::new(name.to_string(), settings);
 
-        self.processes.write_with(|mut processes| {
+        let pre_count = self.processes.write_with(|mut processes| {
+            let pre_count = processes.iter().fold(0, |buff, process| {
+                let count = match &process.settings.messages {
+                    MessageSettings::Output | MessageSettings::Error => 1,
+                    MessageSettings::All => 2,
+                };
+
+                buff + count
+            });
+
             processes.push(process.clone());
+            pre_count
         });
 
-        match &process.settings.messages {
-            MessageSettings::Output => {
-                let stdout = child
-                    .stdout
-                    .take()
-                    .ok_or_else(|| anyhow::anyhow!("Failed to get stdout on process: {name}"))?;
+        let focus_indexes =
+            match &process.settings.messages {
+                MessageSettings::Output => {
+                    let stdout = child.stdout.take().ok_or_else(|| {
+                        anyhow::anyhow!("Failed to get stdout on process: {name}")
+                    })?;
 
-                spawn_thread!(thread_output(
-                    stdout,
-                    process.out_messages,
-                    process.search_message
-                ));
-            }
-            MessageSettings::Error => {
-                let stderr = child
-                    .stderr
-                    .take()
-                    .ok_or_else(|| anyhow::anyhow!("Failed to get stderr on process: {name}"))?;
+                    spawn_thread!(thread_output(
+                        stdout,
+                        process.out_messages,
+                        process.search_message
+                    ));
 
-                let main_messages = self.main_messages.clone();
+                    vec![pre_count + 1]
+                }
+                MessageSettings::Error => {
+                    let stderr = child.stderr.take().ok_or_else(|| {
+                        anyhow::anyhow!("Failed to get stderr on process: {name}")
+                    })?;
 
-                spawn_thread!(thread_error(
-                    child,
-                    stderr,
-                    process.err_messages,
-                    main_messages
-                ));
-            }
-            MessageSettings::All => {
-                let stdout = child
-                    .stdout
-                    .take()
-                    .ok_or_else(|| anyhow::anyhow!("Failed to get stdout on process: {name}"))?;
+                    let main_messages = self.main_messages.clone();
 
-                let stderr = child
-                    .stderr
-                    .take()
-                    .ok_or_else(|| anyhow::anyhow!("Failed to get stderr on process: {name}"))?;
+                    spawn_thread!(thread_error(
+                        child,
+                        stderr,
+                        process.err_messages,
+                        main_messages
+                    ));
 
-                let main_messages = self.main_messages.clone();
+                    vec![pre_count + 1]
+                }
+                MessageSettings::All => {
+                    let stdout = child.stdout.take().ok_or_else(|| {
+                        anyhow::anyhow!("Failed to get stdout on process: {name}")
+                    })?;
 
-                spawn_thread!(thread_output(
-                    stdout,
-                    process.out_messages,
-                    process.search_message
-                ));
-                spawn_thread!(thread_error(
-                    child,
-                    stderr,
-                    process.err_messages,
-                    main_messages
-                ));
-            }
-        };
+                    let stderr = child.stderr.take().ok_or_else(|| {
+                        anyhow::anyhow!("Failed to get stderr on process: {name}")
+                    })?;
+
+                    let main_messages = self.main_messages.clone();
+
+                    spawn_thread!(thread_output(
+                        stdout,
+                        process.out_messages,
+                        process.search_message
+                    ));
+                    spawn_thread!(thread_error(
+                        child,
+                        stderr,
+                        process.err_messages,
+                        main_messages
+                    ));
+
+                    vec![pre_count + 1, pre_count + 2]
+                }
+            };
+
+        let indexes = focus_indexes
+            .into_iter()
+            .map(|index| {
+                let index = index.to_string();
+                let mut chars = index.chars();
+
+                if let (Some(char), None) = (chars.next(), chars.next()) {
+                    Ok(char)
+                } else {
+                    Err(anyhow!("Can't add more then 9 processes."))
+                }
+            })
+            .collect::<Result<Vec<_>>>()?;
 
         if let ScrollSettings::Enable {
             up_right,
             down_left,
         } = process.settings.scroll
         {
-            let scroll = process.scroll_status.clone();
-
-            spawn_thread!(thread_scroll(scroll, up_right, down_left));
+            self.inputs.write_with(|mut inputs| {
+                inputs.inputs.push(Action::new(
+                    up_right.into_event_no_modifier(),
+                    ActionType::ScrollUp(process.scroll_status.clone()),
+                ));
+                inputs.inputs.push(Action::new(
+                    down_left.into_event_no_modifier(),
+                    ActionType::ScrollDown(process.scroll_status.clone()),
+                ));
+                inputs.inputs.push(Action::new(
+                    up_right.into_event(KeyModifiers::SHIFT),
+                    ActionType::ScrollRight(process.scroll_status.clone()),
+                ));
+                inputs.inputs.push(Action::new(
+                    down_left.into_event(KeyModifiers::SHIFT),
+                    ActionType::ScrollLeft(process.scroll_status.clone()),
+                ));
+            });
         }
+
+        self.inputs.write_with(|mut inputs| {
+            for index in indexes {
+                inputs.inputs.push(Action::new(
+                    KeyCode::Char(index).into_event_no_modifier(),
+                    ActionType::Focus((index.to_digit(10).unwrap() as usize, self.focus.clone())),
+                ));
+            }
+        });
 
         Ok(())
     }
@@ -165,7 +245,7 @@ impl Terminal {
                 return Ok(message);
             }
 
-            thread_sleep();
+            sleep_thread();
         }
     }
 }
@@ -229,102 +309,192 @@ fn thread_error(
     }
 }
 
-fn thread_draw(
-    main_messages: SharedMessages,
-    main_scroll: Shared<ScrollStatus>,
-    processes: SharedProcesses,
-) {
+fn thread_input(inputs: Shared<KeyBoardActions>) {
+    loop {
+        let event = crossterm::event::read().expect("Failed to read event.");
+
+        inputs.read_with(|inputs| {
+            inputs.apply_event(event);
+        });
+    }
+}
+
+fn thread_draw(main_messages: SharedMessages, main_scroll: BaseStatus, processes: SharedProcesses) {
     let mut terminal = ratatui::init();
 
+    let data = DrawCache::new(main_messages, main_scroll, processes);
+
+    let mut cache = DrawCache::default_detach();
+
     loop {
-        let main_messages = main_messages.read_access().clone();
+        let read = data.detach();
 
-        let main_scroll = main_scroll.read_access().clone();
+        if read == cache {
+            sleep_thread();
+            continue;
+        } else {
+            cache = read.clone();
+        }
 
-        let processes = processes
-            .read_access()
-            .iter()
-            .map(Process::detach)
-            .collect::<Vec<_>>();
+        let DrawCache {
+            main_messages,
+            main_scroll,
+            processes,
+        } = read;
 
         terminal
             .draw(|frame| {
-                let main_chunks = Layout::default()
-                    .direction(Direction::Horizontal)
-                    .constraints([Constraint::Percentage(30), Constraint::Percentage(70)])
-                    .split(frame.area());
+                if let Some(focus) = main_scroll.focus {
+                    if focus == 0 {
+                        render_frame(
+                            frame,
+                            frame.area(),
+                            "",
+                            BlockType::Main,
+                            BlocFocus::Exit,
+                            main_messages,
+                            &main_scroll.main_scroll,
+                        );
+                    } else {
+                        let mut index = 0;
+                        for i in processes {
+                            if let Some((t, messages)) = match i.settings.messages {
+                                MessageSettings::Output => {
+                                    index += 1;
 
-                render_frame(
-                    frame,
-                    main_chunks[0],
-                    "Main",
-                    None,
-                    main_messages,
-                    &main_scroll,
-                );
+                                    if index == focus {
+                                        Some((BlockType::Out, i.out_messages))
+                                    } else {
+                                        None
+                                    }
+                                }
+                                MessageSettings::Error => {
+                                    index += 1;
 
-                let processes_chunks = Layout::default()
-                    .direction(Direction::Horizontal)
-                    .constraints(vec![
-                        Constraint::Ratio(1, processes.len() as u32);
-                        processes.len()
-                    ])
-                    .split(main_chunks[1]);
+                                    if index == focus {
+                                        Some((BlockType::Err, i.err_messages))
+                                    } else {
+                                        None
+                                    }
+                                }
+                                MessageSettings::All => {
+                                    index += 1;
 
-                for (index, process) in processes.into_iter().enumerate() {
-                    match process.settings.messages {
-                        MessageSettings::Output => {
-                            render_frame(
-                                frame,
-                                processes_chunks[index],
-                                process.name,
-                                Some("out"),
-                                process.out_messages,
-                                &process.scroll_status,
-                            );
+                                    if index == focus {
+                                        Some((BlockType::Out, i.out_messages))
+                                    } else if index + 1 == focus {
+                                        Some((BlockType::Err, i.err_messages))
+                                    } else {
+                                        index += 1;
+                                        None
+                                    }
+                                }
+                            } {
+                                render_frame(
+                                    frame,
+                                    frame.area(),
+                                    i.name,
+                                    t,
+                                    BlocFocus::Exit,
+                                    messages,
+                                    &i.scroll_status,
+                                );
+                                break;
+                            }
                         }
-                        MessageSettings::Error => {
-                            render_frame(
-                                frame,
-                                processes_chunks[index],
-                                process.name,
-                                Some("err"),
-                                process.err_messages,
-                                &process.scroll_status,
-                            );
-                        }
-                        MessageSettings::All => {
-                            let process_chunks = Layout::default()
-                                .direction(Direction::Vertical)
-                                .constraints([
-                                    Constraint::Percentage(70),
-                                    Constraint::Percentage(30),
-                                ])
-                                .split(processes_chunks[index]);
+                    }
+                } else {
+                    let main_chunks = Layout::default()
+                        .direction(Direction::Horizontal)
+                        .constraints([Constraint::Percentage(30), Constraint::Percentage(70)])
+                        .split(frame.area());
 
-                            render_frame(
-                                frame,
-                                process_chunks[0],
-                                &process.name,
-                                Some("out"),
-                                process.out_messages,
-                                &process.scroll_status,
-                            );
-                            render_frame(
-                                frame,
-                                process_chunks[1],
-                                process.name,
-                                Some("err"),
-                                process.err_messages,
-                                &process.scroll_status,
-                            );
+                    render_frame(
+                        frame,
+                        main_chunks[0],
+                        "",
+                        BlockType::Main,
+                        BlocFocus::Enter(0),
+                        main_messages,
+                        &main_scroll.main_scroll,
+                    );
+
+                    let processes_chunks = Layout::default()
+                        .direction(Direction::Horizontal)
+                        .constraints(vec![
+                            Constraint::Ratio(1, processes.len() as u32);
+                            processes.len()
+                        ])
+                        .split(main_chunks[1]);
+
+                    let mut focus = 0;
+
+                    for (index, process) in processes.into_iter().enumerate() {
+                        match process.settings.messages {
+                            MessageSettings::Output => {
+                                focus += 1;
+
+                                render_frame(
+                                    frame,
+                                    processes_chunks[index],
+                                    process.name,
+                                    BlockType::Out,
+                                    BlocFocus::Enter(focus),
+                                    process.out_messages,
+                                    &process.scroll_status,
+                                );
+                            }
+                            MessageSettings::Error => {
+                                focus += 1;
+
+                                render_frame(
+                                    frame,
+                                    processes_chunks[index],
+                                    process.name,
+                                    BlockType::Err,
+                                    BlocFocus::Enter(focus),
+                                    process.err_messages,
+                                    &process.scroll_status,
+                                );
+                            }
+                            MessageSettings::All => {
+                                let process_chunks = Layout::default()
+                                    .direction(Direction::Vertical)
+                                    .constraints([
+                                        Constraint::Percentage(70),
+                                        Constraint::Percentage(30),
+                                    ])
+                                    .split(processes_chunks[index]);
+
+                                focus += 1;
+                                render_frame(
+                                    frame,
+                                    process_chunks[0],
+                                    &process.name,
+                                    BlockType::Out,
+                                    BlocFocus::Enter(focus),
+                                    process.out_messages,
+                                    &process.scroll_status,
+                                );
+
+                                focus += 1;
+                                render_frame(
+                                    frame,
+                                    process_chunks[1],
+                                    process.name,
+                                    BlockType::Err,
+                                    BlocFocus::Enter(focus),
+                                    process.err_messages,
+                                    &process.scroll_status,
+                                );
+                            }
                         }
                     }
                 }
             })
             .unwrap();
 
-        thread_sleep();
+        sleep_thread();
     }
 }
 
@@ -332,7 +502,8 @@ fn render_frame<N>(
     frame: &mut Frame,
     chunk: Rect,
     name: N,
-    ty: Option<&str>,
+    ty: BlockType,
+    focus: BlocFocus,
     messages: Vec<String>,
     scroll: &ScrollStatus,
 ) where
@@ -346,67 +517,62 @@ fn render_frame<N>(
 
     let mut state = ListState::default().with_selected(select_message);
 
-    if let Some(y) = scroll.y {
-        state.scroll_up_by(y);
+    if scroll.y > 0 {
+        state.scroll_up_by(min(scroll.y as usize, messages.len()) as u16);
     }
 
-    let name = if let Some(ty) = ty {
-        format!("{}-{ty}", name.to_string())
-    } else {
-        name.to_string()
+    let sub_title = match ty {
+        BlockType::Main => Line::from("Main").cyan().bold(),
+        BlockType::Out => Line::from("Out").light_green().bold(),
+        BlockType::Err => Line::from("Err").light_red().bold(),
     };
 
-    let list = List::new(messages).block(Block::default().title(name).borders(Borders::ALL));
+    let focus = match focus {
+        BlocFocus::Enter(key) => format!("full screen: '{key}'"),
+        BlocFocus::Exit => format!("press 'Esc' to exit full screen"),
+    };
+
+    let block = Block::default()
+        .title(Line::from(name.to_string()).gray().bold().centered())
+        .title(sub_title.centered())
+        .title(Line::from(focus).right_aligned().italic().dark_gray())
+        .borders(Borders::ALL);
+
+    let list = List::new(messages).block(block);
 
     frame.render_stateful_widget(list, chunk, &mut state);
 }
 
-fn thread_scroll(scroll: Shared<ScrollStatus>, up_right: KeyCode, down_left: KeyCode) {
-    loop {
-        if let Event::Key(event) = crossterm::event::read().expect("Failed to read event.") {
-            // Up
-            if event == KeyEvent::new(up_right, KeyModifiers::empty()) {
-                scroll.write_with(|mut scroll| {
-                    scroll.y = scroll.y.map(|y| y + 1).or(Some(1));
-                });
-            // Right
-            } else if event == KeyEvent::new(up_right, KeyModifiers::SHIFT) {
-                scroll.write_with(|mut scroll| {
-                    scroll.x = scroll.x.map(|x| x + 1).or(Some(1));
-                });
-            }
-            // Down
-            else if event == KeyEvent::new(down_left, KeyModifiers::empty()) {
-                scroll.write_with(|mut scroll| {
-                    scroll.y = scroll.y.map(|y| y.saturating_sub(1)).or(Some(0));
-                });
-            }
-            // Left
-            else if event == KeyEvent::new(down_left, KeyModifiers::SHIFT) {
-                scroll.write_with(|mut scroll| {
-                    scroll.x = scroll.x.map(|x| x.saturating_sub(1)).or(Some(0));
-                });
-            } else if event == KeyEvent::new(KeyCode::Esc, KeyModifiers::empty()) {
-                // kill process
-                ratatui::restore();
-                std::process::exit(0);
-            }
-        }
-    }
-}
-
-fn thread_sleep() {
+fn sleep_thread() {
     sleep(Duration::from_millis(50));
 }
 
-#[derive(Clone)]
-struct Process<O = SharedMessages, E = SharedMessages, S = Shared<ScrollStatus>> {
+pub enum BlockType {
+    Main,
+    Out,
+    Err,
+}
+
+pub enum BlocFocus {
+    Enter(usize),
+    Exit,
+}
+
+type DetachProcess = Process<Vec<String>, Vec<String>, ScrollStatus, ()>;
+
+#[derive(Clone, PartialEq)]
+struct Process<
+    O = SharedMessages,
+    E = SharedMessages,
+    S = Shared<ScrollStatus>,
+    SM = Shared<Option<SearchMessage>>,
+> {
     pub name: String,
     pub out_messages: O,
     pub err_messages: E,
     pub settings: ProcessSettings,
     pub scroll_status: S,
-    pub search_message: Shared<Option<SearchMessage>>,
+    pub search_message: SM,
 }
 
 impl Process {
@@ -421,36 +587,19 @@ impl Process {
         }
     }
 
-    pub fn detach(&self) -> Process<Vec<String>, Vec<String>, ScrollStatus> {
+    pub fn detach(&self) -> DetachProcess {
         Process {
             name: self.name.clone(),
             settings: self.settings.clone(),
             out_messages: self.out_messages.read_access().clone(),
             err_messages: self.err_messages.read_access().clone(),
             scroll_status: self.scroll_status.read_access().clone(),
-            search_message: self.search_message.clone(),
+            search_message: (),
         }
     }
 }
 
-#[derive(Default, Clone)]
-struct ScrollStatus {
-    x: Option<u16>,
-    y: Option<u16>,
-}
-
-struct Regex(regex::Regex);
-
-impl Regex {
-    pub fn new() -> Self {
-        Self(regex::Regex::new(r"\x1b\[([\x30-\x3f]*[\x20-\x2f]*[\x40-\x7e])").unwrap())
-    }
-
-    pub fn clear(&self, line: String) -> String {
-        self.0.replace_all(&line, "").to_string()
-    }
-}
-
+#[derive(PartialEq)]
 struct SearchMessage {
     pub submsg: String,
     pub message: Option<String>,
@@ -462,6 +611,62 @@ impl SearchMessage {
             submsg,
             message: None,
         }
+    }
+}
+
+type DrawCacheDetach = DrawCache<Vec<String>, DetachBaseStatus, Vec<DetachProcess>>;
+
+#[derive(Clone, PartialEq)]
+struct DrawCache<MM = SharedMessages, MS = BaseStatus, P = SharedProcesses> {
+    pub main_messages: MM,
+    pub main_scroll: MS,
+    pub processes: P,
+}
+
+impl DrawCache {
+    pub fn new(
+        main_messages: SharedMessages,
+        main_scroll: BaseStatus,
+        processes: SharedProcesses,
+    ) -> Self {
+        Self {
+            main_messages,
+            main_scroll,
+            processes,
+        }
+    }
+
+    pub fn default_detach() -> DrawCacheDetach {
+        DrawCache {
+            main_messages: Default::default(),
+            main_scroll: Default::default(),
+            processes: Default::default(),
+        }
+    }
+
+    pub fn detach(&self) -> DrawCacheDetach {
+        DrawCache {
+            main_messages: self.main_messages.read_access().clone(),
+            main_scroll: self.main_scroll.detach(),
+            processes: self
+                .processes
+                .read_access()
+                .iter()
+                .map(Process::detach)
+                .collect::<Vec<_>>(),
+        }
+    }
+}
+
+struct Regex(regex::Regex);
+
+impl Regex {
+    pub fn new() -> Self {
+        Self(regex::Regex::new(r"\x1b\[([\x30-\x3f]*[\x20-\x2f]*[\x40-\x7e])").unwrap())
+    }
+
+    pub fn clear(&self, line: String) -> String {
+        self.0.replace_all(&line, "").to_string()
     }
 }
 
@@ -517,7 +722,7 @@ mod tests {
 
         terminal
             .add_process(
-                "test-1",
+                "Foo",
                 process1,
                 ProcessSettings::new_with_scroll(
                     crate::MessageSettings::Output,
@@ -532,7 +737,7 @@ mod tests {
 
         terminal
             .add_process(
-                "test-2",
+                "Bar",
                 process2,
                 ProcessSettings::new(crate::MessageSettings::All),
             )
@@ -540,12 +745,12 @@ mod tests {
 
         sleep(Duration::from_secs(2));
         terminal.add_message("searching_message");
-        let msg = terminal.block_search_message("test-2", "llo").unwrap();
+        let msg = terminal.block_search_message("Foo", "llo").unwrap();
         terminal.add_message(msg);
 
         sleep(Duration::from_secs(2));
         terminal.add_message("searching_message");
-        let msg = terminal.block_search_message("test-2", "ar").unwrap();
+        let msg = terminal.block_search_message("Bar", "ar").unwrap();
         terminal.add_message(msg);
 
         sleep(Duration::from_secs(50));

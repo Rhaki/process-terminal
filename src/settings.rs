@@ -1,6 +1,6 @@
 use crossterm::event::KeyCode;
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub struct ProcessSettings {
     pub messages: MessageSettings,
     pub scroll: ScrollSettings,
@@ -19,14 +19,14 @@ impl ProcessSettings {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub enum MessageSettings {
     Output,
     Error,
     All,
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub enum ScrollSettings {
     Disable,
     Enable {

@@ -1,6 +1,7 @@
-pub mod macros;
-pub mod settings;
-pub mod shared;
-pub mod terminal;
+mod keyboard_actions;
+mod macros;
+mod settings;
+mod shared;
+mod terminal;
 
 pub use {settings::*, terminal::*};
