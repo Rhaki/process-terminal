@@ -244,7 +244,7 @@ fn thread_draw(
         let processes = processes
             .read_access()
             .iter()
-            .map(Process::detacth)
+            .map(Process::detach)
             .collect::<Vec<_>>();
 
         terminal
@@ -421,7 +421,7 @@ impl Process {
         }
     }
 
-    pub fn detacth(&self) -> Process<Vec<String>, Vec<String>, ScrollStatus> {
+    pub fn detach(&self) -> Process<Vec<String>, Vec<String>, ScrollStatus> {
         Process {
             name: self.name.clone(),
             settings: self.settings.clone(),
