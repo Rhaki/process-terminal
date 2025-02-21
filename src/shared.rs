@@ -39,16 +39,6 @@ impl<S> Shared<S> {
     {
         action(self.write_access())
     }
-
-    /// Disassemble the smart pointer and return the inner value.
-    ///
-    /// Panics if reference count is greater than 1, or if the lock is poisoned.
-    pub fn disassemble(self) -> S {
-        Arc::try_unwrap(self.inner)
-            .unwrap_or_else(|_| panic!("unwrapping Arc when ref count > 1"))
-            .into_inner()
-            .unwrap_or_else(|err| panic!("poisoned lock: {err:?}"))
-    }
 }
 
 impl<S> Clone for Shared<S> {
