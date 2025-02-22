@@ -1,6 +1,7 @@
 use {
     process_terminal::{
-        add_process, block_search_message, end_terminal, tprintln, utils::create_printing_process, KeyCode, MessageSettings, ProcessSettings, ScrollSettings
+        KeyCode, MessageSettings, ProcessSettings, ScrollSettings, add_process,
+        block_search_message, end_terminal, tprintln, utils::create_printing_process,
     },
     std::{thread::sleep, time::Duration},
 };
@@ -38,10 +39,12 @@ fn main() {
     tprintln!("searching_message");
     let msg = block_search_message("Foo", "llo").unwrap();
     tprintln!("msg found: {}", msg);
+    assert_eq!(msg, "hello");
 
     tprintln!("searching_message");
     let msg = block_search_message("Bar", "ar").unwrap();
     tprintln!("msg found: {}", msg);
+    assert_eq!(msg, "bar");
 
     sleep(Duration::from_secs(20));
 
