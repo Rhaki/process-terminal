@@ -10,7 +10,7 @@ impl ProcessSettings {
     pub fn new(messages: MessageSettings) -> Self {
         Self {
             messages,
-            scroll: ScrollSettings::disable(),
+            scroll: ScrollSettings::Disable,
         }
     }
 
@@ -21,6 +21,7 @@ impl ProcessSettings {
 
 #[derive(Clone, PartialEq)]
 pub enum MessageSettings {
+    None,
     Output,
     Error,
     All,
@@ -41,9 +42,5 @@ impl ScrollSettings {
             up_right,
             down_left,
         }
-    }
-
-    pub fn disable() -> Self {
-        ScrollSettings::Disable
     }
 }

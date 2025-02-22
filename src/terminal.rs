@@ -10,7 +10,7 @@ use {
         spawn_thread,
     },
     anyhow::{Result, anyhow},
-    crossterm::event::{KeyCode, KeyModifiers},
+    crossterm::event::KeyModifiers,
     ratatui::{
         Frame,
         layout::{Constraint, Direction, Layout, Rect},
@@ -34,7 +34,6 @@ pub struct Terminal {
     processes: SharedProcesses,
     main_messages: SharedMessages,
     inputs: Shared<KeyBoardActions>,
-    focus: Shared<Option<usize>>,
 }
 
 impl Terminal {
@@ -57,8 +56,6 @@ impl Terminal {
         #[cfg(not(test))]
         let not_in_test = true;
 
-        let focus = scroll_status.focus.clone();
-
         if std::env::args().any(|arg| arg.starts_with("--exact")) || not_in_test {
             spawn_thread!(thread_draw(_main_messages, scroll_status, _processes));
         }
@@ -69,7 +66,6 @@ impl Terminal {
             processes,
             main_messages,
             inputs,
-            focus,
         }
     }
 
@@ -86,6 +82,7 @@ impl Terminal {
                 let count = match &process.settings.messages {
                     MessageSettings::Output | MessageSettings::Error => 1,
                     MessageSettings::All => 2,
+                    MessageSettings::None => 0,
                 };
 
                 buff + count
@@ -151,21 +148,8 @@ impl Terminal {
 
                     vec![pre_count + 1, pre_count + 2]
                 }
+                MessageSettings::None => vec![],
             };
-
-        let indexes = focus_indexes
-            .into_iter()
-            .map(|index| {
-                let index = index.to_string();
-                let mut chars = index.chars();
-
-                if let (Some(char), None) = (chars.next(), chars.next()) {
-                    Ok(char)
-                } else {
-                    Err(anyhow!("Can't add more then 9 processes."))
-                }
-            })
-            .collect::<Result<Vec<_>>>()?;
 
         if let ScrollSettings::Enable {
             up_right,
@@ -173,33 +157,29 @@ impl Terminal {
         } = process.settings.scroll
         {
             self.inputs.write_with(|mut inputs| {
-                inputs.inputs.push(Action::new(
+                inputs.push(Action::new(
                     up_right.into_event_no_modifier(),
                     ActionType::ScrollUp(process.scroll_status.clone()),
                 ));
-                inputs.inputs.push(Action::new(
+                inputs.push(Action::new(
                     down_left.into_event_no_modifier(),
                     ActionType::ScrollDown(process.scroll_status.clone()),
                 ));
-                inputs.inputs.push(Action::new(
+                inputs.push(Action::new(
                     up_right.into_event(KeyModifiers::SHIFT),
                     ActionType::ScrollRight(process.scroll_status.clone()),
                 ));
-                inputs.inputs.push(Action::new(
+                inputs.push(Action::new(
                     down_left.into_event(KeyModifiers::SHIFT),
                     ActionType::ScrollLeft(process.scroll_status.clone()),
                 ));
             });
         }
 
-        self.inputs.write_with(|mut inputs| {
-            for index in indexes {
-                inputs.inputs.push(Action::new(
-                    KeyCode::Char(index).into_event_no_modifier(),
-                    ActionType::Focus((index.to_digit(10).unwrap() as usize, self.focus.clone())),
-                ));
-            }
-        });
+        if !focus_indexes.is_empty() {
+            self.inputs
+                .write_with(|mut inputs| inputs.push_focus(&focus_indexes))?;
+        }
 
         Ok(())
     }
@@ -389,6 +369,7 @@ fn thread_draw(main_messages: SharedMessages, main_scroll: BaseStatus, processes
                                         None
                                     }
                                 }
+                                MessageSettings::None => None,
                             } {
                                 render_frame(
                                     frame,
@@ -488,6 +469,7 @@ fn thread_draw(main_messages: SharedMessages, main_scroll: BaseStatus, processes
                                     &process.scroll_status,
                                 );
                             }
+                            MessageSettings::None => {}
                         }
                     }
                 }

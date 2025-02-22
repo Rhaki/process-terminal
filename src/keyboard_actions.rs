@@ -1,17 +1,20 @@
 use {
     crate::shared::Shared,
+    anyhow::Result,
+    anyhow::anyhow,
     crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers},
 };
 
 pub struct KeyBoardActions {
-    pub inputs: Vec<Action>,
+    actions: Vec<Action>,
+    focus: Shared<Option<usize>>,
 }
 
 impl KeyBoardActions {
     pub fn new() -> (Self, BaseStatus) {
         let base_status: BaseStatus = Default::default();
 
-        let inputs = vec![
+        let actions = vec![
             Action {
                 event: KeyCode::Char('c').into_event(KeyModifiers::CONTROL),
                 data: ActionType::Close,
@@ -42,12 +45,18 @@ impl KeyBoardActions {
             },
         ];
 
-        (Self { inputs }, base_status)
+        (
+            Self {
+                actions,
+                focus: base_status.focus.clone(),
+            },
+            base_status,
+        )
     }
 
     pub fn apply_event(&self, event: Event) {
         let events = self
-            .inputs
+            .actions
             .iter()
             .filter(|action| action.event == event)
             .collect::<Vec<_>>();
@@ -55,6 +64,32 @@ impl KeyBoardActions {
         for action in events {
             action.data.apply();
         }
+    }
+
+    pub fn push(&mut self, action: Action) {
+        self.actions.push(action);
+    }
+
+    pub fn push_focus(&mut self, indexes: &[usize]) -> Result<()> {
+        for index in indexes {
+            let char = {
+                let str_index = index.to_string();
+                let mut chars = str_index.chars();
+
+                if let (Some(char), None) = (chars.next(), chars.next()) {
+                    char
+                } else {
+                    return Err(anyhow!("Can't add more then 9 processes."));
+                }
+            };
+
+            self.push(Action::new(
+                KeyCode::Char(char).into_event_no_modifier(),
+                ActionType::Focus((*index, self.focus.clone())),
+            ));
+        }
+
+        Ok(())
     }
 }
 
