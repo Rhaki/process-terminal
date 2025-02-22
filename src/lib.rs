@@ -1,7 +1,8 @@
+mod functions;
 mod keyboard_actions;
-mod macros;
 mod settings;
 mod shared;
 mod terminal;
+pub mod utils;
 
-pub use {settings::*, terminal::*};
+pub use {crossterm::event::KeyCode, functions::*, settings::*, terminal::*};

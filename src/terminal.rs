@@ -5,9 +5,7 @@ use {
             Action, ActionType, BaseStatus, DetachBaseStatus, KeyBoardActions, KeyCodeExt,
             ScrollStatus,
         },
-        let_clone,
         shared::Shared,
-        spawn_thread,
     },
     anyhow::{Result, anyhow},
     crossterm::event::KeyModifiers,
@@ -22,13 +20,35 @@ use {
         cmp::min,
         io::{BufRead, BufReader},
         process::{Child, ChildStderr, ChildStdout},
+        sync::LazyLock,
         thread::sleep,
         time::Duration,
     },
 };
 
+pub static TERMINAL: LazyLock<Terminal> = LazyLock::new(Terminal::new);
+
 type SharedMessages = Shared<Vec<String>>;
 type SharedProcesses = Shared<Vec<Process>>;
+type DetachProcess = Process<Vec<String>, Vec<String>, ScrollStatus, ()>;
+type DrawCacheDetach = DrawCache<Vec<String>, DetachBaseStatus, Vec<DetachProcess>>;
+
+macro_rules! spawn_thread {
+    ($callback:expr) => {
+        std::thread::spawn(move || $callback);
+    };
+}
+
+macro_rules! let_clone {
+    ($init:expr, $( $name:ident | $($clone:ident)|* : $ty:ty),*) => {
+        $(
+            let $name: $ty = $init;
+            $(
+                let $clone = $name.clone();
+            )*
+        )*
+    };
+}
 
 pub struct Terminal {
     processes: SharedProcesses,
@@ -37,7 +57,7 @@ pub struct Terminal {
 }
 
 impl Terminal {
-    pub fn new() -> Terminal {
+    fn new() -> Terminal {
         let_clone!(
             Default::default(),
             main_messages | _main_messages: SharedMessages,
@@ -69,7 +89,7 @@ impl Terminal {
         }
     }
 
-    pub fn add_process(
+    pub(crate) fn add_process(
         &self,
         name: &str,
         mut child: Child,
@@ -112,14 +132,7 @@ impl Terminal {
                         anyhow::anyhow!("Failed to get stderr on process: {name}")
                     })?;
 
-                    let main_messages = self.main_messages.clone();
-
-                    spawn_thread!(thread_error(
-                        child,
-                        stderr,
-                        process.err_messages,
-                        main_messages
-                    ));
+                    spawn_thread!(thread_error(stderr, process.err_messages,));
 
                     vec![pre_count + 1]
                 }
@@ -132,24 +145,22 @@ impl Terminal {
                         anyhow::anyhow!("Failed to get stderr on process: {name}")
                     })?;
 
-                    let main_messages = self.main_messages.clone();
-
                     spawn_thread!(thread_output(
                         stdout,
                         process.out_messages,
                         process.search_message
                     ));
-                    spawn_thread!(thread_error(
-                        child,
-                        stderr,
-                        process.err_messages,
-                        main_messages
-                    ));
+                    spawn_thread!(thread_error(stderr, process.err_messages,));
 
                     vec![pre_count + 1, pre_count + 2]
                 }
                 MessageSettings::None => vec![],
             };
+
+        let main_messages = self.main_messages.clone();
+        let name = name.to_string();
+
+        spawn_thread!(thread_exit(name, child, main_messages));
 
         if let ScrollSettings::Enable {
             up_right,
@@ -193,7 +204,7 @@ impl Terminal {
         });
     }
 
-    pub fn block_search_message<S, P>(&self, process: P, submsg: S) -> Result<String>
+    pub(crate) fn block_search_message<S, P>(&self, process: P, submsg: S) -> Result<String>
     where
         S: ToString,
         P: ToString,
@@ -260,12 +271,7 @@ fn thread_output(
     }
 }
 
-fn thread_error(
-    mut child: Child,
-    stderr: ChildStderr,
-    messages: SharedMessages,
-    main_messages: SharedMessages,
-) {
+fn thread_error(stderr: ChildStderr, messages: SharedMessages) {
     let regex = Regex::new();
 
     for line in BufReader::new(stderr).lines() {
@@ -274,19 +280,19 @@ fn thread_error(
         messages.write_with(|mut messages| {
             messages.push(line);
         });
-
-        let exit_status = match child.try_wait() {
-            Ok(status) => match status {
-                Some(status) => format!("ok with status: {status}."),
-                None => format!("ok with status: None."),
-            },
-            Err(err) => format!("fail with error: {err}."),
-        };
-
-        main_messages.write_with(|mut messages| {
-            messages.push(format!("Process exited: {exit_status}"));
-        });
     }
+}
+
+fn thread_exit(process_name: String, mut child: Child, main_messages: SharedMessages) {
+    let exit_status = match child.wait() {
+        Ok(status) => format!("ok: {status}."),
+
+        Err(err) => format!("fail with error: {err}."),
+    };
+
+    main_messages.write_with(|mut messages| {
+        messages.push(format!("Process '{process_name}' exited: {exit_status}"));
+    });
 }
 
 fn thread_input(inputs: Shared<KeyBoardActions>) {
@@ -529,18 +535,16 @@ fn sleep_thread() {
     sleep(Duration::from_millis(50));
 }
 
-pub enum BlockType {
+enum BlockType {
     Main,
     Out,
     Err,
 }
 
-pub enum BlocFocus {
+enum BlocFocus {
     Enter(usize),
     Exit,
 }
-
-type DetachProcess = Process<Vec<String>, Vec<String>, ScrollStatus, ()>;
 
 #[derive(Clone, PartialEq)]
 struct Process<
@@ -596,8 +600,6 @@ impl SearchMessage {
     }
 }
 
-type DrawCacheDetach = DrawCache<Vec<String>, DetachBaseStatus, Vec<DetachProcess>>;
-
 #[derive(Clone, PartialEq)]
 struct DrawCache<MM = SharedMessages, MS = BaseStatus, P = SharedProcesses> {
     pub main_messages: MM,
@@ -649,92 +651,5 @@ impl Regex {
 
     pub fn clear(&self, line: String) -> String {
         self.0.replace_all(&line, "").to_string()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use {
-        super::Terminal,
-        crate::{ProcessSettings, ScrollSettings},
-        crossterm::event::KeyCode,
-        std::{
-            process::{Child, Command, Stdio},
-            thread::sleep,
-            time::Duration,
-        },
-    };
-
-    fn create_process<'a, const N: usize>(messages: [&str; N], sleep: f64, last: u64) -> Child {
-        let mut args = format!("sleep {sleep}");
-
-        for _ in 0..(last as f64 / sleep / messages.len() as f64) as usize {
-            for message in messages {
-                args.push_str(&format!(" && echo {message} && sleep {sleep}"));
-            }
-        }
-
-        Command::new("sh")
-            .arg("-c")
-            .arg(args)
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .unwrap()
-    }
-
-    #[test]
-    fn terminal() {
-        let t = Terminal::new();
-
-        t.add_message("hello");
-
-        sleep(Duration::from_secs(2));
-
-        t.add_message("world");
-
-        sleep(Duration::from_secs(2));
-    }
-
-    #[test]
-    fn process() {
-        let terminal = Terminal::new();
-
-        let process1 = create_process(["hello", "world", "foo", "bar"], 1.0, 30);
-
-        terminal
-            .add_process(
-                "Foo",
-                process1,
-                ProcessSettings::new_with_scroll(
-                    crate::MessageSettings::Output,
-                    ScrollSettings::enable(KeyCode::Left, KeyCode::Right),
-                ),
-            )
-            .unwrap();
-
-        sleep(Duration::from_secs(2));
-
-        let process2 = create_process(["hello", "world >&2", "foo", "bar"], 0.1, 8);
-
-        terminal
-            .add_process(
-                "Bar",
-                process2,
-                ProcessSettings::new(crate::MessageSettings::All),
-            )
-            .unwrap();
-
-        sleep(Duration::from_secs(2));
-        terminal.add_message("searching_message");
-        let msg = terminal.block_search_message("Foo", "llo").unwrap();
-        terminal.add_message(msg);
-
-        sleep(Duration::from_secs(2));
-        terminal.add_message("searching_message");
-        let msg = terminal.block_search_message("Bar", "ar").unwrap();
-        terminal.add_message(msg);
-
-        sleep(Duration::from_secs(50));
     }
 }
