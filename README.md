@@ -1,8 +1,11 @@
 # process-terminal
 
+[![Crates.io](https://img.shields.io/crates/v/process-terminal.svg)](https://crates.io/crates/process-terminal)
+
 **process-terminal** is a Rust library built on top of [ratatui](https://github.com/ratatui-org/ratatui) that lets you visualize the outputs of one or more processes launched directly from your Rust code using [`std::process::Command`](https://doc.rust-lang.org/std/process/struct.Command.html).
 
 The terminal interface is divided into two main sections:
+
 - **Main Section (Left):** Displays the output of your main Rust application.
 - **Processes Section (Right):** Automatically adjusts to show outputs from any processes you launch and add for visualization.
 
@@ -10,7 +13,7 @@ In addition, the library supports scrolling and offers a full screen mode to dis
 
 ## Features
 
-- **Dual-Section Terminal UI:**  
+- **Dual-Section Terminal UI:**
   - **Main Section:** For output from the main Rust script.
   - **Processes Section:** For outputs from processes spawned via `std::process::Command`.
 - **Scrolling Support:** Easily scroll through the outputs.
@@ -21,16 +24,13 @@ In addition, the library supports scrolling and offers a full screen mode to dis
 
 ![process-terminal](images/example.png)
 
-## Installation
-
-Add `process-terminal` to your `Cargo.toml`:
-
 ```toml
 [dependencies]
 process-terminal = "0.1"
 ```
 
 # Example
+
 ```rust
 use {
     process_terminal::{
