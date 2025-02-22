@@ -17,6 +17,10 @@ In addition, the library supports scrolling and offers a full screen mode to dis
 - **Full Screen Mode:** Display a specific output in full screen.
 - **Process Output Awaiting:** Wait for a specific output (or substring) from a process.
 
+## How it looks like
+
+![process-terminal](images/example.png)
+
 ## Installation
 
 Add `process-terminal` to your `Cargo.toml`:
