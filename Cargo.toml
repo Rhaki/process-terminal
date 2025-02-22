@@ -1,7 +1,10 @@
 [package]
-edition = "2024"
-name    = "process-terminal"
-version = "0.1.0"
+authors    = ["Rhaki"]
+edition    = "2024"
+license    = "MIT"
+name       = "process-terminal"
+repository = "https://github.com/Rhaki/process-terminal"
+version    = "0.1.0"
 
 [dependencies]
 anyhow    = "1"
