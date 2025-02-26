@@ -1,7 +1,6 @@
 use {
-    crate::shared::Shared,
-    anyhow::Result,
-    anyhow::anyhow,
+    crate::{shared::Shared, ExitCallback},
+    anyhow::{anyhow, Result},
     crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers},
 };
 
@@ -11,13 +10,14 @@ pub struct KeyBoardActions {
 }
 
 impl KeyBoardActions {
-    pub fn new() -> (Self, BaseStatus) {
+    pub fn new() -> (Self, BaseStatus, Shared<ExitCallback>) {
         let base_status: BaseStatus = Default::default();
+        let exit_callback: Shared<ExitCallback> = Default::default();
 
         let actions = vec![
             Action {
                 event: KeyCode::Char('c').into_event(KeyModifiers::CONTROL),
-                data: ActionType::Close,
+                data: ActionType::Close(exit_callback.clone()),
             },
             Action {
                 event: KeyCode::Up.into_event_no_modifier(),
@@ -51,6 +51,7 @@ impl KeyBoardActions {
                 focus: base_status.focus.clone(),
             },
             base_status,
+            exit_callback,
         )
     }
 
@@ -105,7 +106,7 @@ impl Action {
 }
 
 pub enum ActionType {
-    Close,
+    Close(Shared<ExitCallback>),
     ScrollUp(Shared<ScrollStatus>),
     ScrollDown(Shared<ScrollStatus>),
     ScrollLeft(Shared<ScrollStatus>),
@@ -117,8 +118,13 @@ pub enum ActionType {
 impl ActionType {
     pub fn apply(&self) {
         match self {
-            ActionType::Close => {
+            ActionType::Close(exit_callback) => {
                 ratatui::restore();
+
+                if let Some(callback) = exit_callback.read_access().as_ref() {
+                    callback();
+                }
+
                 std::process::exit(0);
             }
             ActionType::ScrollUp(shared) => {

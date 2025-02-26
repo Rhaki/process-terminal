@@ -1,20 +1,20 @@
 use {
     crate::{
-        MessageSettings, ProcessSettings, ScrollSettings,
         keyboard_actions::{
             Action, ActionType, BaseStatus, DetachBaseStatus, KeyBoardActions, KeyCodeExt,
             ScrollStatus,
         },
         shared::Shared,
+        MessageSettings, ProcessSettings, ScrollSettings,
     },
-    anyhow::{Result, anyhow},
+    anyhow::{anyhow, Result},
     crossterm::event::KeyModifiers,
     ratatui::{
-        Frame,
         layout::{Constraint, Direction, Layout, Rect},
         style::Stylize,
         text::Line,
         widgets::{Block, Borders, List, ListState},
+        Frame,
     },
     std::{
         cmp::min,
@@ -32,6 +32,7 @@ type SharedMessages = Shared<Vec<String>>;
 type SharedProcesses = Shared<Vec<Process>>;
 type DetachProcess = Process<Vec<String>, Vec<String>, ScrollStatus, ()>;
 type DrawCacheDetach = DrawCache<Vec<String>, DetachBaseStatus, Vec<DetachProcess>>;
+pub(crate) type ExitCallback = Option<Box<dyn Fn() + Send + Sync>>;
 
 macro_rules! spawn_thread {
     ($callback:expr) => {
@@ -54,6 +55,7 @@ pub struct Terminal {
     processes: SharedProcesses,
     main_messages: SharedMessages,
     inputs: Shared<KeyBoardActions>,
+    exit_callback: Shared<ExitCallback>,
 }
 
 impl Terminal {
@@ -64,7 +66,7 @@ impl Terminal {
             processes     | _processes:     SharedProcesses
         );
 
-        let (inputs, scroll_status) = KeyBoardActions::new();
+        let (inputs, scroll_status, exit_callback) = KeyBoardActions::new();
 
         let_clone!(
             Shared::new(inputs),
@@ -86,6 +88,7 @@ impl Terminal {
             processes,
             main_messages,
             inputs,
+            exit_callback,
         }
     }
 
@@ -238,6 +241,12 @@ impl Terminal {
 
             sleep_thread();
         }
+    }
+
+    pub(crate) fn with_exit_callback<F: Fn() + Send + Sync + 'static>(&self, closure: F) {
+        self.exit_callback.write_with(|mut terminal| {
+            *terminal = Some(Box::new(closure));
+        });
     }
 }
 
