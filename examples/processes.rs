@@ -62,3 +62,4 @@ fn main() {
     // Restore the terminal to its original state.
     end_terminal();
 }
+

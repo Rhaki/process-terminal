@@ -1,5 +1,5 @@
 use {
-    crate::{shared::Shared, ExitCallback},
+    crate::{shared::Shared, ExitCallback, SharedMessages},
     anyhow::{anyhow, Result},
     crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers},
 };
@@ -10,9 +10,14 @@ pub struct KeyBoardActions {
 }
 
 impl KeyBoardActions {
-    pub fn new() -> (Self, BaseStatus, Shared<ExitCallback>) {
+    pub fn new(main_messages: SharedMessages) -> (Self, BaseStatus, Shared<ExitCallback>) {
         let base_status: BaseStatus = Default::default();
         let exit_callback: Shared<ExitCallback> = Default::default();
+
+        let main_action_scroll = ActionScroll {
+            status: base_status.main_scroll.clone(),
+            messages: main_messages.clone(),
+        };
 
         let actions = vec![
             Action {
@@ -21,19 +26,19 @@ impl KeyBoardActions {
             },
             Action {
                 event: KeyCode::Up.into_event_no_modifier(),
-                data: ActionType::ScrollUp(base_status.main_scroll.clone()),
+                data: ActionType::ScrollUp(main_action_scroll.clone()),
             },
             Action {
                 event: KeyCode::Down.into_event_no_modifier(),
-                data: ActionType::ScrollDown(base_status.main_scroll.clone()),
+                data: ActionType::ScrollDown(main_action_scroll.clone()),
             },
             Action {
                 event: KeyCode::Left.into_event_no_modifier(),
-                data: ActionType::ScrollLeft(base_status.main_scroll.clone()),
+                data: ActionType::ScrollLeft(main_action_scroll.clone()),
             },
             Action {
                 event: KeyCode::Right.into_event_no_modifier(),
-                data: ActionType::ScrollRight(base_status.main_scroll.clone()),
+                data: ActionType::ScrollRight(main_action_scroll.clone()),
             },
             Action {
                 event: KeyCode::Char('0').into_event_no_modifier(),
@@ -107,10 +112,10 @@ impl Action {
 
 pub enum ActionType {
     Close(Shared<ExitCallback>),
-    ScrollUp(Shared<ScrollStatus>),
-    ScrollDown(Shared<ScrollStatus>),
-    ScrollLeft(Shared<ScrollStatus>),
-    ScrollRight(Shared<ScrollStatus>),
+    ScrollUp(ActionScroll),
+    ScrollDown(ActionScroll),
+    ScrollLeft(ActionScroll),
+    ScrollRight(ActionScroll),
     Focus((usize, Shared<Option<usize>>)),
     RemoveFocus(Shared<Option<usize>>),
 }
@@ -128,22 +133,28 @@ impl ActionType {
                 std::process::exit(0);
             }
             ActionType::ScrollUp(shared) => {
-                shared.write_with(|mut status| {
+                shared.status.write_with(|mut status| {
                     status.y = status.y + 1;
+                    if status.index.is_none() {
+                        status.index = Some(shared.messages.read_access().len());
+                    }
                 });
             }
             ActionType::ScrollDown(shared) => {
-                shared.write_with(|mut status| {
+                shared.status.write_with(|mut status| {
                     status.y = status.y.saturating_sub(1);
+                    if status.y == 0 && status.index.is_some() {
+                        status.index = None;
+                    }
                 });
             }
             ActionType::ScrollLeft(shared) => {
-                shared.write_with(|mut status| {
+                shared.status.write_with(|mut status| {
                     status.x = status.x.saturating_sub(1);
                 });
             }
             ActionType::ScrollRight(shared) => {
-                shared.write_with(|mut status| {
+                shared.status.write_with(|mut status| {
                     status.x = status.x + 1;
                 });
             }
@@ -165,6 +176,13 @@ impl ActionType {
 pub(crate) struct ScrollStatus {
     pub x: u16,
     pub y: u16,
+    pub index: Option<usize>,
+}
+
+#[derive(Clone)]
+pub(crate) struct ActionScroll {
+    pub status: Shared<ScrollStatus>,
+    pub messages: SharedMessages,
 }
 
 pub trait KeyCodeExt: Sized {
