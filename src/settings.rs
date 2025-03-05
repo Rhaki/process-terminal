@@ -30,17 +30,11 @@ pub enum MessageSettings {
 #[derive(Clone, PartialEq)]
 pub enum ScrollSettings {
     Disable,
-    Enable {
-        up_right: KeyCode,
-        down_left: KeyCode,
-    },
+    Enable { up: KeyCode, down: KeyCode },
 }
 
 impl ScrollSettings {
-    pub fn enable(up_right: KeyCode, down_left: KeyCode) -> Self {
-        ScrollSettings::Enable {
-            up_right,
-            down_left,
-        }
+    pub fn enable(up: KeyCode, down: KeyCode) -> Self {
+        ScrollSettings::Enable { up, down }
     }
 }

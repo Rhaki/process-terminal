@@ -11,13 +11,12 @@ use {
     crossterm::event::KeyModifiers,
     ratatui::{
         layout::{Constraint, Direction, Layout, Rect},
-        style::Stylize,
-        text::Line,
+        style::{Style, Stylize},
+        text::{Line, Text},
         widgets::{Block, Borders, List, ListState},
         Frame,
     },
     std::{
-        cmp::min,
         io::{BufRead, BufReader},
         process::{Child, ChildStderr, ChildStdout},
         sync::LazyLock,
@@ -165,8 +164,8 @@ impl Terminal {
         spawn_thread!(thread_exit(name, child, main_messages));
 
         if let ScrollSettings::Enable {
-            up_right,
-            down_left,
+            up: up_right,
+            down: down_left,
         } = process.settings.scroll
         {
             for (scroll_status, messages) in [
@@ -194,12 +193,12 @@ impl Terminal {
                         ActionType::ScrollDown(action_scroll.clone()),
                     ));
                     inputs.push(Action::new(
-                        up_right.into_event(KeyModifiers::SHIFT),
-                        ActionType::ScrollRight(action_scroll.clone()),
+                        down_left.into_event(KeyModifiers::SHIFT),
+                        ActionType::StopScrolling(process.scroll_status_out.clone()),
                     ));
                     inputs.push(Action::new(
                         down_left.into_event(KeyModifiers::SHIFT),
-                        ActionType::ScrollLeft(action_scroll),
+                        ActionType::StopScrolling(process.scroll_status_err.clone()),
                     ));
                 });
             }
@@ -361,7 +360,7 @@ fn thread_draw(main_messages: SharedMessages, main_scroll: BaseStatus, processes
                             frame.area(),
                             "",
                             BlockType::Main,
-                            BlocFocus::Exit,
+                            BlockFocus::Exit,
                             main_messages,
                             &main_scroll.main_scroll,
                         );
@@ -406,7 +405,7 @@ fn thread_draw(main_messages: SharedMessages, main_scroll: BaseStatus, processes
                                     frame.area(),
                                     i.name,
                                     ty,
-                                    BlocFocus::Exit,
+                                    BlockFocus::Exit,
                                     messages,
                                     &scroll,
                                 );
@@ -429,7 +428,7 @@ fn thread_draw(main_messages: SharedMessages, main_scroll: BaseStatus, processes
                         main_chunks[0],
                         "",
                         BlockType::Main,
-                        BlocFocus::Enter(0),
+                        BlockFocus::Enter(0),
                         main_messages,
                         &main_scroll.main_scroll,
                     );
@@ -458,7 +457,7 @@ fn thread_draw(main_messages: SharedMessages, main_scroll: BaseStatus, processes
                                     processes_chunks[index],
                                     process.name,
                                     BlockType::Out,
-                                    BlocFocus::Enter(focus),
+                                    BlockFocus::Enter(focus),
                                     process.out_messages,
                                     &process.scroll_status_out,
                                 );
@@ -471,7 +470,7 @@ fn thread_draw(main_messages: SharedMessages, main_scroll: BaseStatus, processes
                                     processes_chunks[index],
                                     process.name,
                                     BlockType::Err,
-                                    BlocFocus::Enter(focus),
+                                    BlockFocus::Enter(focus),
                                     process.err_messages,
                                     &process.scroll_status_err,
                                 );
@@ -491,7 +490,7 @@ fn thread_draw(main_messages: SharedMessages, main_scroll: BaseStatus, processes
                                     process_chunks[0],
                                     &process.name,
                                     BlockType::Out,
-                                    BlocFocus::Enter(focus),
+                                    BlockFocus::Enter(focus),
                                     process.out_messages,
                                     &process.scroll_status_out,
                                 );
@@ -502,7 +501,7 @@ fn thread_draw(main_messages: SharedMessages, main_scroll: BaseStatus, processes
                                     process_chunks[1],
                                     process.name,
                                     BlockType::Err,
-                                    BlocFocus::Enter(focus),
+                                    BlockFocus::Enter(focus),
                                     process.err_messages,
                                     &process.scroll_status_err,
                                 );
@@ -523,7 +522,7 @@ fn render_frame<N>(
     chunk: Rect,
     name: N,
     ty: BlockType,
-    focus: BlocFocus,
+    focus: BlockFocus,
     messages: Vec<String>,
     scroll: &ScrollStatus,
 ) where
@@ -537,34 +536,54 @@ fn render_frame<N>(
 
     let mut state = ListState::default().with_selected(select_message);
 
-    if scroll.y > 0 {
-        let offset = if let Some(offset) = scroll.index {
-            messages.len().saturating_sub(offset) + scroll.y as usize
-        } else {
-            scroll.y as usize
-        };
-
-        state.scroll_up_by(min(offset, messages.len()) as u16);
-    }
-
     let sub_title = match ty {
         BlockType::Main => Line::from("Main").cyan().bold(),
         BlockType::Out => Line::from("Out").light_green().bold(),
         BlockType::Err => Line::from("Err").light_red().bold(),
     };
 
-    let focus = match focus {
-        BlocFocus::Enter(key) => format!("full screen: '{key}'"),
-        BlocFocus::Exit => format!("press 'Esc' to exit full screen"),
+    let focus_txt = match focus {
+        BlockFocus::Enter(index) => format!("full screen: '{index}'"),
+        BlockFocus::Exit => format!("press 'Esc' to exit full screen"),
     };
 
-    let block = Block::default()
+    let mut block = Block::default()
         .title(Line::from(name.to_string()).gray().bold().centered())
         .title(sub_title.centered())
-        .title(Line::from(focus).right_aligned().italic().dark_gray())
+        .title(Line::from(focus_txt).right_aligned().italic().dark_gray())
         .borders(Borders::ALL);
 
-    let list = List::new(messages).block(block);
+    let is_scrolling = if let Some(y) = scroll.y {
+        let offset = messages.len().saturating_sub(y as usize);
+
+        state.scroll_up_by(offset as u16);
+
+        block = block.title(
+            Line::from(format!(
+                "Scrolling: offset {offset} - press 'shift + scroll_down' key to stop scrolling."
+            ))
+            .bold()
+            .left_aligned()
+            .yellow(),
+        );
+
+        true
+    } else {
+        false
+    };
+
+    let messages = messages
+        .into_iter()
+        .map(|message| {
+            Text::from(textwrap::fill(&message, chunk.width.saturating_sub(3) as usize).clone())
+        })
+        .collect::<Vec<_>>();
+
+    let mut list = List::new(messages).block(block);
+
+    if is_scrolling {
+        list = list.highlight_style(Style::default().yellow().bold());
+    }
 
     frame.render_stateful_widget(list, chunk, &mut state);
 }
@@ -579,7 +598,7 @@ enum BlockType {
     Err,
 }
 
-enum BlocFocus {
+enum BlockFocus {
     Enter(usize),
     Exit,
 }

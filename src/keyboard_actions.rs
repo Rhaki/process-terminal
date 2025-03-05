@@ -78,16 +78,7 @@ impl KeyBoardActions {
 
     pub fn push_focus(&mut self, indexes: &[usize]) -> Result<()> {
         for index in indexes {
-            let char = {
-                let str_index = index.to_string();
-                let mut chars = str_index.chars();
-
-                if let (Some(char), None) = (chars.next(), chars.next()) {
-                    char
-                } else {
-                    return Err(anyhow!("Can't add more then 9 processes."));
-                }
-            };
+            let char = to_char(*index)?;
 
             self.push(Action::new(
                 KeyCode::Char(char).into_event_no_modifier(),
@@ -116,6 +107,7 @@ pub enum ActionType {
     ScrollDown(ActionScroll),
     ScrollLeft(ActionScroll),
     ScrollRight(ActionScroll),
+    StopScrolling(Shared<ScrollStatus>),
     Focus((usize, Shared<Option<usize>>)),
     RemoveFocus(Shared<Option<usize>>),
 }
@@ -134,17 +126,17 @@ impl ActionType {
             }
             ActionType::ScrollUp(shared) => {
                 shared.status.write_with(|mut status| {
-                    status.y = status.y + 1;
-                    if status.index.is_none() {
-                        status.index = Some(shared.messages.read_access().len());
+                    if let Some(y) = &mut status.y {
+                        *y = y.saturating_sub(1);
+                    } else {
+                        status.y = Some(shared.messages.read_access().len() as u16);
                     }
                 });
             }
             ActionType::ScrollDown(shared) => {
                 shared.status.write_with(|mut status| {
-                    status.y = status.y.saturating_sub(1);
-                    if status.y == 0 && status.index.is_some() {
-                        status.index = None;
+                    if let Some(y) = &mut status.y {
+                        *y += 1
                     }
                 });
             }
@@ -156,6 +148,11 @@ impl ActionType {
             ActionType::ScrollRight(shared) => {
                 shared.status.write_with(|mut status| {
                     status.x = status.x + 1;
+                });
+            }
+            ActionType::StopScrolling(shared) => {
+                shared.write_with(|mut status| {
+                    status.y = None;
                 });
             }
             ActionType::Focus((index, shared)) => {
@@ -175,8 +172,7 @@ impl ActionType {
 #[derive(Default, Clone, PartialEq)]
 pub(crate) struct ScrollStatus {
     pub x: u16,
-    pub y: u16,
-    pub index: Option<usize>,
+    pub y: Option<u16>,
 }
 
 #[derive(Clone)]
@@ -213,5 +209,16 @@ impl BaseStatus {
             main_scroll: self.main_scroll.read_access().clone(),
             focus: self.focus.read_access().clone(),
         }
+    }
+}
+
+fn to_char(index: usize) -> Result<char> {
+    let str_index = index.to_string();
+    let mut chars = str_index.chars();
+
+    if let (Some(char), None) = (chars.next(), chars.next()) {
+        Ok(char)
+    } else {
+        return Err(anyhow!("Can't add more then 9 processes."));
     }
 }
