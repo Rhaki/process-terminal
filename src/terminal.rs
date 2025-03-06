@@ -262,6 +262,15 @@ impl Terminal {
             *terminal = Some(Box::new(closure));
         });
     }
+
+    pub(crate) fn kill(&self) {
+        ratatui::restore();
+        if let Some(callback) = self.exit_callback.read_access().as_ref() {
+            callback();
+        }
+
+        std::process::exit(0);
+    }
 }
 
 impl Drop for Terminal {

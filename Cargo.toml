@@ -5,7 +5,7 @@ edition     = "2021"
 license     = "MIT"
 name        = "process-terminal"
 repository  = "https://github.com/Rhaki/process-terminal"
-version     = "0.1.4"
+version     = "0.1.5"
 
 [dependencies]
 anyhow    = "1"
@@ -13,3 +13,4 @@ crossterm = "0.28"
 ratatui   = "0.29"
 regex     = "1"
 textwrap  = "0.16.2"
+

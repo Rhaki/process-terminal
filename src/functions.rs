@@ -29,7 +29,7 @@ where
 }
 
 pub fn end_terminal() {
-    ratatui::restore();
+    TERMINAL.kill();
 }
 
 pub fn with_exit_callback<F: Fn() + Send + Sync + 'static>(closure: F) {
