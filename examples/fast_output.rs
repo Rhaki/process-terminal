@@ -8,7 +8,7 @@ fn main() {
 
     std::thread::sleep(std::time::Duration::from_secs(2));
 
-    let process_foo = create_printing_process(["helloooohelloooohelloooohelloooohelloooohelloooohelloooohelloooohelloooo", "world", "foo", "bar"], 0.2, 50);
+    let process_foo = create_printing_process(["   helloooohelloooohelloooohelloooohelloooohelloooohelloooohelloooohelloooo", "world", "foo", "bar"], 0.2, 50);
 
     // Add the process to the terminal.
     // The first time `add_process` or `tprintln!` is called, the terminal is automatically initialized.

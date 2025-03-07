@@ -583,8 +583,29 @@ fn render_frame<N>(
 
     let messages = messages
         .into_iter()
-        .map(|message| {
-            Text::from(textwrap::fill(&message, chunk.width.saturating_sub(3) as usize).clone())
+        .flat_map(|message| {
+            let messages = textwrap::wrap(&message, chunk.width.saturating_sub(3) as usize);
+
+            let leading_spaces = messages
+                .first()
+                .map(|first_message| {
+                    " ".repeat(first_message.chars().take_while(|&c| c == ' ').count())
+                })
+                .unwrap_or_default();
+
+            messages
+                .into_iter()
+                .enumerate()
+                .map(|(i, message)| {
+                    let mut message = message.into_owned();
+
+                    if i != 0 {
+                        message.insert_str(0, &leading_spaces);
+                    }
+
+                    Text::from(message)
+                })
+                .collect::<Vec<_>>()
         })
         .collect::<Vec<_>>();
 
