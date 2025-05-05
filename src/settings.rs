@@ -4,6 +4,7 @@ use crossterm::event::KeyCode;
 pub struct ProcessSettings {
     pub messages: MessageSettings,
     pub scroll: ScrollSettings,
+    pub clear_regex: bool,
 }
 
 impl ProcessSettings {
@@ -11,11 +12,23 @@ impl ProcessSettings {
         Self {
             messages,
             scroll: ScrollSettings::Disable,
+            clear_regex: true,
         }
     }
 
     pub fn new_with_scroll(messages: MessageSettings, scroll: ScrollSettings) -> Self {
-        Self { messages, scroll }
+        Self {
+            messages,
+            scroll,
+            clear_regex: true,
+        }
+    }
+
+    pub fn disable_clear_regex(self) -> Self {
+        Self {
+            clear_regex: false,
+            ..self
+        }
     }
 }
 

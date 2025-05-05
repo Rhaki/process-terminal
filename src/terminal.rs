@@ -123,7 +123,12 @@ impl Terminal {
 
                     let _out_messages = process.out_messages.clone();
 
-                    spawn_thread!(thread_output(stdout, _out_messages, process.search_message));
+                    spawn_thread!(thread_output(
+                        stdout,
+                        _out_messages,
+                        process.search_message,
+                        process.settings.clear_regex
+                    ));
 
                     vec![pre_count + 1]
                 }
@@ -134,7 +139,11 @@ impl Terminal {
 
                     let _err_messages = process.err_messages.clone();
 
-                    spawn_thread!(thread_error(stderr, _err_messages));
+                    spawn_thread!(thread_error(
+                        stderr,
+                        _err_messages,
+                        process.settings.clear_regex
+                    ));
 
                     vec![pre_count + 1]
                 }
@@ -150,8 +159,17 @@ impl Terminal {
                     let _out_messages = process.out_messages.clone();
                     let _err_messages = process.err_messages.clone();
 
-                    spawn_thread!(thread_output(stdout, _out_messages, process.search_message));
-                    spawn_thread!(thread_error(stderr, _err_messages));
+                    spawn_thread!(thread_output(
+                        stdout,
+                        _out_messages,
+                        process.search_message,
+                        process.settings.clear_regex
+                    ));
+                    spawn_thread!(thread_error(
+                        stderr,
+                        _err_messages,
+                        process.settings.clear_regex
+                    ));
 
                     vec![pre_count + 1, pre_count + 2]
                 }
@@ -283,11 +301,21 @@ fn thread_output(
     stdout: ChildStdout,
     messages: SharedMessages,
     search_message: Shared<Option<SearchMessage>>,
+    clear_regex: bool,
 ) {
-    let regex = Regex::new();
+    let regex = if clear_regex {
+        Some(Regex::new())
+    } else {
+        None
+    };
 
     for line in BufReader::new(stdout).lines() {
-        let line = regex.clear(line.expect("Failed to read line from stdout."));
+        let line = line.expect("Failed to read line from stdout.");
+        let line = if let Some(regex) = &regex {
+            regex.clear(line)
+        } else {
+            line
+        };
 
         messages.write_with(|mut messages| {
             messages.push(line.clone());
@@ -303,11 +331,20 @@ fn thread_output(
     }
 }
 
-fn thread_error(stderr: ChildStderr, messages: SharedMessages) {
-    let regex = Regex::new();
+fn thread_error(stderr: ChildStderr, messages: SharedMessages, clear_regex: bool) {
+    let regex: Option<Regex> = if clear_regex {
+        Some(Regex::new())
+    } else {
+        None
+    };
 
     for line in BufReader::new(stderr).lines() {
-        let line = regex.clear(line.expect("Failed to read line from stderr."));
+        let line = line.expect("Failed to read line from stderr.");
+        let line = if let Some(regex) = &regex {
+            regex.clear(line)
+        } else {
+            line
+        };
 
         messages.write_with(|mut messages| {
             messages.push(line);
